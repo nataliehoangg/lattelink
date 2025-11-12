@@ -192,10 +192,3 @@ Tips:
 | Places API returns `REQUEST_DENIED` | IP restrictions for the scraper key likely don’t include your current IPv4/IPv6, or the Places API isn’t enabled. |
 | Backend can’t connect to MongoDB | Verify the `MONGODB_URI` works in `mongosh`; make sure the database name appears before the query string (`/lattelink?...`). |
 | Scores don’t reflect new weighting | Run the scraper again—the new weights are applied when cafés are refreshed. |
-
----
-
-## 📄 License
-
-MIT
-
