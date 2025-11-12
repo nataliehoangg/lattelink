@@ -29,23 +29,30 @@ export default function Home(): JSX.Element {
 
   return (
     <main className="min-h-screen bg-cream">
-      <section className="relative flex min-h-screen items-center">
+      <section className="relative flex min-h-screen items-center pt-28 pb-16 lg:pt-32">
         <div className="absolute inset-0 bg-gradient-to-br from-pale-latte/20 via-cream to-mist-gray/10" />
 
         <div className="editorial-container relative z-10 w-full">
-          <div className="grid items-center gap-12 lg:grid-cols-2">
+          <div className="grid min-h-[calc(100vh-8rem)] items-stretch gap-12 lg:grid-cols-2">
             <motion.div
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.8, ease: "easeOut" }}
-              className="text-center lg:text-left lg:pr-8"
+              initial={{ opacity: 0, x: -40 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.9, ease: "easeOut", delay: 0.1 }}
+              className="relative min-h-[60vh] overflow-hidden lg:h-full lg:min-h-0"
             >
-              <h1 className="editorial-h1 text-espresso mb-16 tracking-tight text-center lg:text-left">
-                LATTELINK
-              </h1>
-
-              <div className="max-w-2xl mx-auto lg:mx-0">
-                <SearchBar onSearch={setSearchQuery} />
+              <div
+                className="absolute inset-0 scale-105 bg-cover bg-center blur-[6px] brightness-90"
+                style={{ backgroundImage: "url('/images/drinks2.JPG')" }}
+              />
+              <div className="absolute inset-0 flex items-center justify-center bg-deep-coffee/40">
+                <div className="w-full px-6 text-center">
+                  <h1 className="editorial-h1 text-cream mb-8 tracking-tight">
+                    LATTELINK
+                  </h1>
+                  <div className="max-w-2xl mx-auto">
+                    <SearchBar onSearch={setSearchQuery} />
+                  </div>
+                </div>
               </div>
             </motion.div>
 
@@ -53,7 +60,7 @@ export default function Home(): JSX.Element {
               initial={{ opacity: 0, x: 40 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.9, ease: "easeOut", delay: 0.2 }}
-              className="relative h-[45vh] overflow-hidden lg:h-[70vh]"
+              className="relative min-h-[60vh] overflow-hidden lg:h-full lg:min-h-0"
             >
               <div
                 className="absolute inset-0 scale-105 bg-cover bg-center blur-[2px] brightness-105"

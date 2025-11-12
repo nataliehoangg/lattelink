@@ -28,13 +28,15 @@ YELP_API_KEY=your_key_here
 python scraper.py --city "Berkeley" --max-results 20
 ```
 
-## Implementation Notes
+## What the scraper does
 
-This scraper provides the structure and sentiment analysis logic. To fully implement:
+- Queries **Google Places Text Search** and **Place Details** to gather café metadata and up to five recent reviews per place.
+- Queries **Yelp Fusion** search, business details, and reviews, then merges the results with Google data.
+- Applies heuristics to skip obvious restaurants (name/type keywords, business categories).
+- Runs sentiment analysis on every review to score Wi-Fi, outlet availability, seating comfort, and noise.
+- Aggregates sentiment into a workability score, generates amenity tags, and upserts the café + review data into MongoDB.
 
-1. **Google Places API**: Sign up at [Google Cloud Console](https://console.cloud.google.com/) and enable Places API
-2. **Yelp Fusion API**: Sign up at [Yelp Developers](https://www.yelp.com/developers)
-3. Implement the `scrape_google_maps()` and `scrape_yelp()` methods with actual API calls
+The script stores additional context in MongoDB such as source ratings, review counts, price level, hours, and sources (`google`, `yelp`, `user`).
 
 ## Sentiment Analysis
 
@@ -50,4 +52,11 @@ Reviews are analyzed to extract:
 - Noise levels
 
 These are aggregated into a "workability score" for each café.
+
+## Notes
+
+- Google Places enforces a short delay when paging results; the scraper handles this automatically.
+- Yelp Fusion rate limits apply (default script keeps requests under typical free-tier limits).
+- If either API key is missing, that data source is skipped with a warning.
+- The script de-duplicates cafés by name + address and merges reviews across sources.
 

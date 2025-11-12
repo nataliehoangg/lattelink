@@ -19,7 +19,8 @@ import argparse
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+from urllib.parse import urlparse
 from typing import Dict, List, Optional, Set, Tuple
 
 import requests
@@ -66,7 +67,7 @@ CAFE_KEYWORDS = {"cafe", "coffee", "espresso", "tea", "roaster", "latte"}
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 class CafeScraper:
@@ -82,7 +83,17 @@ class CafeScraper:
     def _connect_db(self):
         try:
             client = MongoClient(self.mongo_uri)
-            db_name = self.mongo_uri.rsplit("/", 1)[-1] or "lattelink"
+            env_db_name = os.getenv("MONGODB_DB_NAME")
+            if env_db_name:
+                db_name = env_db_name
+            else:
+                parsed = urlparse(self.mongo_uri)
+                path = parsed.path.lstrip("/")
+                db_name = path.split("/", 1)[0] if path else ""
+                if db_name:
+                    db_name = db_name.split("?", 1)[0]
+                if not db_name:
+                    db_name = "lattelink"
             print(f"✅ Connected to MongoDB: {db_name}")
             return client[db_name]
         except Exception as exc:
@@ -156,7 +167,7 @@ class CafeScraper:
         outlet_scores: List[float] = []
         seating_scores: List[float] = []
         noise_scores: List[float] = []
-        outlet_mentions: List[bool] = []
+        outlet_positive_mentions = 0
 
         for review in reviews:
             sentiment = review.get("sentiment", {})
@@ -164,7 +175,8 @@ class CafeScraper:
                 wifi_scores.append(sentiment["wifi"])
             if sentiment.get("outlets"):
                 outlet_scores.append(sentiment["outlets"])
-                outlet_mentions.append(sentiment["outlets"] > 0)
+                if sentiment["outlets"] > 0:
+                    outlet_positive_mentions += 1
             if sentiment.get("seating"):
                 seating_scores.append(sentiment["seating"])
             if sentiment.get("noise"):
@@ -187,15 +199,19 @@ class CafeScraper:
         seating_avg = sum(seating_scores) / len(seating_scores) if seating_scores else 0.0
         noise_avg = sum(noise_scores) / len(noise_scores) if noise_scores else 0.0
 
-        return {
+        amenities_summary = {
             "wifi": {"quality": to_quality(wifi_avg, "wifi"), "score": to_score(wifi_avg)},
             "outlets": {
-                "available": bool(outlet_mentions) and (sum(outlet_mentions) / len(outlet_mentions) >= 0.4),
+                # Treat outlets as available only if multiple positive mentions show up in reviews.
+                # This prioritises cafés that reviewers consistently call out as laptop-friendly.
+                "available": outlet_positive_mentions >= 2,
                 "score": to_score(outlet_avg),
             },
             "seating": {"type": to_quality(seating_avg, "seating"), "score": to_score(seating_avg)},
             "noise": {"level": to_quality(noise_avg, "noise"), "score": to_score(noise_avg)},
         }
+
+        return amenities_summary
 
     # ------------------------------------------------------------------
     # External API consumers
@@ -537,13 +553,31 @@ class CafeScraper:
     # Persistence
     # ------------------------------------------------------------------
 
-    def process_cafe(self, cafe_data: Dict, reviews: List[Dict]) -> None:
+    def process_cafe(self, cafe_data: Dict, reviews: List[Dict], fallback_city: str) -> None:
         analyzed_reviews = []
         for review in reviews:
             sentiment = self.analyze_review_sentiment(review.get("text", ""))
             analyzed_reviews.append({**review, "sentiment": sentiment})
 
         amenities = self.score_amenities(analyzed_reviews)
+
+        outlet_component = amenities["outlets"]["score"] if amenities["outlets"]["available"] else 0
+        seating_component = amenities["seating"]["score"]
+        wifi_component = amenities["wifi"]["score"]
+        noise_component = amenities["noise"]["score"]
+
+        workability_score = (
+            outlet_component * 0.45
+            + seating_component * 0.3
+            + wifi_component * 0.2
+            + noise_component * 0.05
+        )
+
+        # Heavier penalty if reviewers did not highlight outlet availability.
+        if not amenities["outlets"]["available"]:
+            workability_score *= 0.6
+
+        workability_score = round(workability_score, 2)
 
         tags: Set[str] = {"Laptop-Friendly", "Study-Friendly"}
         wifi_quality = amenities["wifi"]["quality"]
@@ -561,11 +595,14 @@ class CafeScraper:
             "coordinates": [cafe_data.get("lng", 0.0), cafe_data.get("lat", 0.0)],
         }
 
+        city_value = cafe_data.get("city") or fallback_city
+        neighborhood_value = cafe_data.get("neighborhood") or ""
+
         cafe_doc = {
             "name": cafe_data.get("name", ""),
             "address": cafe_data.get("address", ""),
-            "city": cafe_data.get("city", ""),
-            "neighborhood": cafe_data.get("neighborhood") or "",
+            "city": city_value,
+            "neighborhood": neighborhood_value,
             "coordinates": coordinates,
             "amenities": amenities,
             "tags": list(tags),
@@ -581,23 +618,23 @@ class CafeScraper:
             "ratingSources": cafe_data.get("rating_sources", {}),
             "reviewCounts": cafe_data.get("review_counts", {}),
             "lastUpdated": _now(),
+            "workabilityScore": workability_score,
         }
 
         cafes_collection = self.db.cafes
         reviews_collection = self.db.reviews
 
-        existing = cafes_collection.find_one(
-            {
-                "$or": [
-                    {"googleMapsId": cafe_doc.get("googleMapsId")},
-                    {"yelpId": cafe_doc.get("yelpId")},
-                    {"name": cafe_doc["name"], "address": cafe_doc["address"]},
-                ]
-            }
-        )
+        or_clauses = [{"name": cafe_doc["name"], "address": cafe_doc["address"]}]
+        if cafe_doc.get("googleMapsId"):
+            or_clauses.append({"googleMapsId": cafe_doc["googleMapsId"]})
+        if cafe_doc.get("yelpId"):
+            or_clauses.append({"yelpId": cafe_doc["yelpId"]})
+
+        existing = cafes_collection.find_one({"$or": or_clauses})
 
         if existing:
             cafe_id = existing["_id"]
+            reviews_collection.delete_many({"cafe": cafe_id})
             cafes_collection.update_one({"_id": cafe_id}, {"$set": cafe_doc})
             action_text = "Updated"
         else:
@@ -659,11 +696,20 @@ class CafeScraper:
             print("⚠️  No cafés found with current filters.")
             return
 
+        # Remove existing cafés for this city to avoid stale seed entries
+        city_filter = {"city": {"$regex": f"^{city}$", "$options": "i"}}
+        existing_ids = list(self.db.cafes.find(city_filter, {"_id": 1}))
+        if existing_ids:
+            removed = self.db.cafes.delete_many(city_filter)
+            cafe_ids = [doc["_id"] for doc in existing_ids]
+            self.db.reviews.delete_many({"cafe": {"$in": cafe_ids}})
+            print(f"🧹 Removed {removed.deleted_count} existing cafés for {city}")
+
         saved = 0
         for candidate in merged_candidates:
             if candidate.get("lat") is None or candidate.get("lng") is None:
                 continue
-            self.process_cafe(candidate, candidate.get("reviews", []))
+            self.process_cafe(candidate, candidate.get("reviews", []), city)
             saved += 1
 
         print(f"\n🎉 Scraping complete for {city}. Saved/updated {saved} cafés.\n")

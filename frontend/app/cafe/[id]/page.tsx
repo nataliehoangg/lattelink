@@ -38,16 +38,16 @@ export default function CafeDetailPage() {
   }
 
   return (
-    <div className="min-h-screen bg-cream">
-      <header className="bg-cream/95 backdrop-blur-sm border-b border-mist-gray">
-        <div className="editorial-container py-6">
-          <Link href="/" className="editorial-caption text-mocha hover:text-espresso transition-colors inline-flex items-center gap-2">
+    <div className="min-h-screen bg-cream pt-32 pb-16">
+      <main className="editorial-container">
+        <div className="mb-10">
+          <Link
+            href="/"
+            className="editorial-caption text-mocha hover:text-espresso transition-colors inline-flex items-center gap-2"
+          >
             ← Back
           </Link>
         </div>
-      </header>
-
-      <main className="editorial-container py-16">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}

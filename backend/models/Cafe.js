@@ -138,6 +138,7 @@ const cafeSchema = new mongoose.Schema({
   },
 }, {
   timestamps: true,
+  collection: 'cafes',
 });
 
 // Index for geospatial queries
@@ -145,13 +146,25 @@ cafeSchema.index({ coordinates: '2dsphere' });
 
 // Calculate workability score before saving
 cafeSchema.pre('save', function(next) {
-  const scores = [
-    this.amenities.wifi.score,
-    this.amenities.outlets.score,
-    this.amenities.seating.score,
-    this.amenities.noise.score,
-  ];
-  this.workabilityScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const wifiScore = this?.amenities?.wifi?.score ?? 5;
+  const outletAvailable = this?.amenities?.outlets?.available ?? false;
+  const outletScoreRaw = this?.amenities?.outlets?.score ?? 5;
+  const seatingScore = this?.amenities?.seating?.score ?? 5;
+  const noiseScore = this?.amenities?.noise?.score ?? 5;
+
+  const outletScore = outletAvailable ? outletScoreRaw : 0;
+
+  let weighted =
+    outletScore * 0.45 +
+    seatingScore * 0.3 +
+    wifiScore * 0.2 +
+    noiseScore * 0.05;
+
+  if (!outletAvailable) {
+    weighted *= 0.6;
+  }
+
+  this.workabilityScore = Number(weighted.toFixed(2));
   next();
 });
 

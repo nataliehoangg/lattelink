@@ -32,7 +32,7 @@ export default function SearchBar({ onSearch }: SearchBarProps) {
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
           placeholder="Search cafés by city, vibe, or name"
-          className="w-full bg-transparent border-0 border-b-2 border-mist-gray pb-3 pt-2 px-0 text-deep-coffee placeholder:text-deep-coffee/40 focus:outline-none editorial-body text-center tracking-wide"
+          className="w-full bg-transparent border-0 border-b-2 border-mist-gray pb-3 pt-2 px-0 text-cream placeholder:text-cream/80 caret-cream focus:outline-none editorial-body text-center tracking-wide"
           style={{
             fontVariant: 'small-caps',
             letterSpacing: '0.05em',

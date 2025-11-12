@@ -8,13 +8,15 @@ export function useCafes(searchQuery: string = '') {
   }
   
   if (searchQuery) {
-    // Try to detect if it's a city or general search
-    if (searchQuery.includes(',')) {
-      const parts = searchQuery.split(',').map(s => s.trim())
-      params.city = parts[0]
+    const normalized = searchQuery.trim()
+
+    if (normalized.includes(',')) {
+      const parts = normalized.split(',').map((s) => s.trim()).filter(Boolean)
+      if (parts[0]) params.city = parts[0]
       if (parts[1]) params.neighborhood = parts[1]
     } else {
-      params.q = searchQuery
+      // Assume single token is a city name; keep free-text search empty to avoid over-filtering
+      params.city = normalized
     }
   }
 
