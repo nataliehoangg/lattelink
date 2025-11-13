@@ -1,11 +1,13 @@
 'use client'
 
 import { Cafe } from '@/lib/api'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import Link from 'next/link'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MapPin, Star, Zap, Users } from 'lucide-react'
 
 interface MapViewProps {
   cafes: Cafe[]
+  currentQuery?: string
 }
 
 declare global {
@@ -15,14 +17,154 @@ declare global {
   }
 }
 
-export default function MapView({ cafes }: MapViewProps) {
+export default function MapView({ cafes, currentQuery }: MapViewProps) {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<google.maps.Map | null>(null)
   const markersRef = useRef<google.maps.Marker[]>([])
+  const markerMapRef = useRef<Record<string, google.maps.Marker>>({})
+  const infoWindowRef = useRef<google.maps.InfoWindow | null>(null)
+  const pendingPanRef = useRef(false)
+  const activeCafeIdRef = useRef<string | null>(null)
+  const markerLabelMapRef = useRef<Record<string, string>>({})
+  const mapZoomRef = useRef<number>(13)
+  const zoomListenerRef = useRef<google.maps.MapsEventListener | null>(null)
+  const [activeCafeId, setActiveCafeId] = useState<string | null>(null)
   const [mapError, setMapError] = useState<string | null>(null)
 
+  const sortedCafes = useMemo(
+    () => cafes.slice().sort((a, b) => b.workabilityScore - a.workabilityScore),
+    [cafes]
+  )
+  const rankMap = useMemo(() => {
+    const map: Record<string, number> = {}
+    sortedCafes.forEach((cafe, index) => {
+      map[cafe._id] = index + 1
+    })
+    return map
+  }, [sortedCafes])
+
+  const escapeHtml = useCallback((value: string) => {
+    const safeValue = String(value)
+    return safeValue
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  }, [])
+
+  const createInfoWindowContent = useCallback(
+    (cafe: Cafe) => {
+      const name = escapeHtml(cafe.name ?? '')
+      const location = escapeHtml(cafe.neighborhood || cafe.city || '')
+      const score = cafe.workabilityScore.toFixed(1)
+      const wifi = cafe.amenities?.wifi?.quality ?? 'unknown'
+      const seating = cafe.amenities?.seating?.type ?? 'unknown'
+
+      return `
+        <div style="max-width:240px;padding:12px 14px;font-family:'Inter',sans-serif;color:#2D241F;">
+          <h3 style="margin:0 0 6px;font-size:16px;font-weight:600;letter-spacing:0.01em;">${name}</h3>
+          <p style="margin:0 0 10px;font-size:12px;color:#5C4431;">${location}</p>
+          <div style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#2D241F;">
+            <span style="display:flex;align-items:center;gap:6px;font-weight:600;">
+              ⭐ ${score}/10
+            </span>
+            <span style="display:flex;align-items:center;gap:6px;">
+              📶 Wi-Fi: ${escapeHtml(wifi)}
+            </span>
+            <span style="display:flex;align-items:center;gap:6px;">
+              🪑 Seating: ${escapeHtml(seating)}
+            </span>
+          </div>
+        </div>
+      `
+    },
+    [escapeHtml]
+  )
+
+  const openInfoWindow = useCallback(
+    (cafe: Cafe, marker: google.maps.Marker) => {
+      if (!window.google?.maps || !mapInstanceRef.current) return
+
+      if (!infoWindowRef.current) {
+        infoWindowRef.current = new window.google.maps.InfoWindow()
+      }
+
+      infoWindowRef.current.setContent(createInfoWindowContent(cafe))
+      infoWindowRef.current.open({
+        map: mapInstanceRef.current,
+        anchor: marker,
+      })
+    },
+    [createInfoWindowContent]
+  )
+
+  const computeScale = useCallback((zoom: number, isActive: boolean) => {
+    const normalizedZoom = Number.isFinite(zoom) ? zoom : 13
+    const base = 6 + Math.max(0, Math.min(normalizedZoom - 12, 6)) * 0.9
+    return isActive ? base + 3 : base
+  }, [])
+
+  const setMarkerAppearance = useCallback(
+    (id: string, marker: google.maps.Marker, isActive: boolean) => {
+      if (!window.google?.maps) return
+
+      const zoom = mapZoomRef.current ?? mapInstanceRef.current?.getZoom() ?? 13
+      const icon: google.maps.Symbol = {
+        path: window.google.maps.SymbolPath.CIRCLE,
+        scale: computeScale(zoom, isActive),
+        fillColor: isActive ? '#2D241F' : '#5C4431',
+        fillOpacity: 1,
+        strokeColor: isActive ? '#EBDCCB' : '#F8F5F1',
+        strokeWeight: isActive ? 3 : 2,
+        labelOrigin: new window.google.maps.Point(0, 0),
+      }
+
+      marker.setIcon(icon)
+      marker.setZIndex(isActive ? (window.google.maps.Marker.MAX_ZINDEX || 10000) + 1 : 1)
+
+      const labelText = markerLabelMapRef.current[id]
+      if (labelText) {
+        marker.setLabel({
+          text: labelText,
+          color: isActive ? '#F8F5F1' : '#2D241F',
+          fontSize: isActive ? '14px' : '12px',
+          fontWeight: isActive ? '700' : '600',
+        })
+      }
+    },
+    [computeScale]
+  )
+
+  const showCafeOnMap = useCallback(
+    (cafe: Cafe, options: { pan?: boolean } = {}) => {
+      pendingPanRef.current = !!options.pan
+      activeCafeIdRef.current = cafe._id
+      setActiveCafeId(cafe._id)
+
+      const marker = markerMapRef.current[cafe._id]
+      if (marker) {
+        openInfoWindow(cafe, marker)
+      }
+    },
+    [openInfoWindow]
+  )
+
   useEffect(() => {
-    if (!mapRef.current || cafes.length === 0) return
+    if (!mapRef.current || cafes.length === 0) {
+      markersRef.current.forEach((marker) => marker.setMap(null))
+      markersRef.current = []
+      markerMapRef.current = {}
+      markerLabelMapRef.current = {}
+      infoWindowRef.current?.close()
+      setActiveCafeId(null)
+      activeCafeIdRef.current = null
+      if (zoomListenerRef.current) {
+        zoomListenerRef.current.remove()
+        zoomListenerRef.current = null
+      }
+      return
+    }
 
     setMapError(null)
 
@@ -43,7 +185,7 @@ export default function MapView({ cafes }: MapViewProps) {
       }
 
       if (!mapInstanceRef.current) {
-        const center = cafes[0]?.coordinates || { lat: 37.8715, lng: -122.273 }
+        const center = sortedCafes[0]?.coordinates || { lat: 37.8715, lng: -122.273 }
         mapInstanceRef.current = new window.google.maps.Map(mapRef.current, {
           center: { lat: center.lat, lng: center.lng },
           zoom: 13,
@@ -70,24 +212,50 @@ export default function MapView({ cafes }: MapViewProps) {
       const map = mapInstanceRef.current
       if (!map) return
 
+      mapZoomRef.current = map.getZoom() ?? mapZoomRef.current
+      if (zoomListenerRef.current) {
+        zoomListenerRef.current.remove()
+      }
+      zoomListenerRef.current = map.addListener('zoom_changed', () => {
+        mapZoomRef.current = map.getZoom() ?? mapZoomRef.current
+        Object.entries(markerMapRef.current).forEach(([id, marker]) => {
+          const isActive = activeCafeIdRef.current === id
+          setMarkerAppearance(id, marker, isActive)
+        })
+      })
+
       // Clear old markers
       markersRef.current.forEach((marker) => marker.setMap(null))
       markersRef.current = []
+      markerMapRef.current = {}
+      markerLabelMapRef.current = {}
 
-      markersRef.current = cafes.map((cafe) => {
-        return new window.google.maps.Marker({
+      markersRef.current = sortedCafes.map((cafe) => {
+        const rank = rankMap[cafe._id] ?? 0
+        const rankText = rank ? String(rank) : ''
+
+        const marker = new window.google.maps.Marker({
           position: { lat: cafe.coordinates.lat, lng: cafe.coordinates.lng },
           map,
           title: cafe.name,
-          icon: {
-            path: window.google.maps.SymbolPath.CIRCLE,
-            scale: 8,
-            fillColor: '#5C4431',
-            fillOpacity: 1,
-            strokeColor: '#F8F5F1',
-            strokeWeight: 2,
-          },
+          label: rankText
+            ? {
+                text: rankText,
+                color: '#2D241F',
+                fontSize: '12px',
+                fontWeight: '600',
+              }
+            : undefined,
         })
+
+        markerLabelMapRef.current[cafe._id] = rankText
+        markerMapRef.current[cafe._id] = marker
+        marker.addListener('mouseover', () => showCafeOnMap(cafe))
+        marker.addListener('click', () => showCafeOnMap(cafe, { pan: true }))
+
+        setMarkerAppearance(cafe._id, marker, activeCafeIdRef.current === cafe._id)
+
+        return marker
       })
     }
 
@@ -128,8 +296,46 @@ export default function MapView({ cafes }: MapViewProps) {
 
     return () => {
       markersRef.current.forEach((marker) => marker.setMap(null))
+      markerMapRef.current = {}
+      markerLabelMapRef.current = {}
+      infoWindowRef.current?.close()
+      if (zoomListenerRef.current) {
+        zoomListenerRef.current.remove()
+        zoomListenerRef.current = null
+      }
     }
-  }, [cafes])
+  }, [cafes, rankMap, setMarkerAppearance, showCafeOnMap, sortedCafes])
+
+  useEffect(() => {
+    if (!window.google?.maps) return
+
+    activeCafeIdRef.current = activeCafeId
+
+    Object.entries(markerMapRef.current).forEach(([id, marker]) => {
+      setMarkerAppearance(id, marker, id === activeCafeId)
+    })
+
+    if (!activeCafeId) {
+      infoWindowRef.current?.close()
+      return
+    }
+
+    const cafe = cafes.find((item) => item._id === activeCafeId)
+    const marker = markerMapRef.current[activeCafeId]
+
+    if (!cafe || !marker) return
+
+    openInfoWindow(cafe, marker)
+
+    if (pendingPanRef.current && mapInstanceRef.current && marker.getPosition()) {
+      const position = marker.getPosition()
+      if (position) {
+        mapInstanceRef.current.panTo(position)
+        mapInstanceRef.current.panBy(0, -80)
+      }
+    }
+    pendingPanRef.current = false
+  }, [activeCafeId, cafes, openInfoWindow, setMarkerAppearance])
 
   if (cafes.length === 0) {
     return (
@@ -141,7 +347,7 @@ export default function MapView({ cafes }: MapViewProps) {
     )
   }
 
-  const sortedCafes = useMemo(() => cafes.slice().sort((a, b) => b.workabilityScore - a.workabilityScore), [cafes])
+  const trimmedQuery = currentQuery?.trim()
 
   return (
     <div className="space-y-10">
@@ -158,39 +364,72 @@ export default function MapView({ cafes }: MapViewProps) {
             RANKED CAFÉS
           </h3>
           <ol className="space-y-4">
-            {sortedCafes.map((cafe, index) => (
-              <li
-                key={cafe._id}
-                className="border border-mist-gray/60 bg-pale-latte/30 p-4 transition-colors duration-300 hover:border-espresso"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-2">
-                    <p className="editorial-caption text-deep-coffee/50">#{index + 1}</p>
-                    <p className="editorial-body text-deep-coffee">{cafe.name}</p>
-                    <div className="flex items-center gap-2 text-deep-coffee/60 editorial-caption">
-                      <MapPin className="h-3.5 w-3.5" />
-                      <span>{cafe.address}</span>
+            {sortedCafes.map((cafe, index) => {
+              const isActive = activeCafeId === cafe._id
+              return (
+                <li key={cafe._id}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={isActive}
+                    onMouseEnter={() => showCafeOnMap(cafe)}
+                    onFocus={() => showCafeOnMap(cafe)}
+                    onClick={() => showCafeOnMap(cafe, { pan: true })}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        showCafeOnMap(cafe, { pan: true })
+                      }
+                    }}
+                    className={`group border bg-pale-latte/30 p-4 transition duration-300 cursor-pointer outline-none ${
+                      isActive
+                        ? 'border-espresso shadow-lg bg-pale-latte/60'
+                        : 'border-mist-gray/60 hover:border-espresso hover:bg-pale-latte/45 focus:border-espresso focus:bg-pale-latte/45'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-2">
+                        <p className="editorial-caption text-deep-coffee/50">#{index + 1}</p>
+                        <p className="editorial-body text-deep-coffee">{cafe.name}</p>
+                        <div className="flex items-center gap-2 text-deep-coffee/60 editorial-caption">
+                          <MapPin className="h-3.5 w-3.5" />
+                          <span>{cafe.address}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 bg-cream/70 px-3 py-1">
+                        <Star className="h-4 w-4 text-mocha fill-mocha" />
+                        <span className="editorial-caption text-espresso">
+                          {`${cafe.workabilityScore.toFixed(1)}/10`}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-3 text-deep-coffee/70 editorial-caption">
+                      <span className="inline-flex items-center gap-1">
+                        <Zap className="h-3.5 w-3.5" />
+                        {cafe.amenities.outlets.available ? 'Outlets ready' : 'Limited outlets'}
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <Users className="h-3.5 w-3.5" />
+                        {cafe.amenities.seating.type}
+                      </span>
+                    </div>
+                    <div className="mt-4 flex justify-end">
+                      <Link
+                        href={
+                          trimmedQuery
+                            ? { pathname: `/cafe/${cafe._id}`, query: { q: trimmedQuery } }
+                            : `/cafe/${cafe._id}`
+                        }
+                        className="editorial-caption text-espresso transition-colors hover:text-deep-coffee"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        View details →
+                      </Link>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1 bg-cream/70 px-3 py-1">
-                    <Star className="h-4 w-4 text-mocha fill-mocha" />
-                    <span className="editorial-caption text-espresso">
-                      {cafe.workabilityScore.toFixed(1)}
-                    </span>
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-3 text-deep-coffee/70 editorial-caption">
-                  <span className="inline-flex items-center gap-1">
-                    <Zap className="h-3.5 w-3.5" />
-                    {cafe.amenities.outlets.available ? 'Outlets ready' : 'Limited outlets'}
-                  </span>
-                  <span className="inline-flex items-center gap-1">
-                    <Users className="h-3.5 w-3.5" />
-                    {cafe.amenities.seating.type}
-                  </span>
-                </div>
-              </li>
-            ))}
+                </li>
+              )
+            })}
           </ol>
         </aside>
 

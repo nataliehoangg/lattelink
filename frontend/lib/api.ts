@@ -33,17 +33,58 @@ export interface Cafe {
       type: 'comfortable' | 'adequate' | 'limited' | 'unknown'
       score: number
     }
+    capacity?: {
+      level: 'ample' | 'roomy' | 'cozy' | 'tight' | 'unknown'
+      score: number
+    }
+    drinks?: {
+      quality: 'excellent' | 'good' | 'average' | 'poor' | 'unknown'
+      score: number
+    }
+    lighting?: {
+      quality: 'bright' | 'balanced' | 'dim' | 'unknown'
+      score: number
+    }
     noise: {
       level: 'quiet' | 'moderate' | 'loud' | 'unknown'
       score: number
     }
   }
   workabilityScore: number
+  metrics?: CafeMetrics
   tags: string[]
   reviews?: any[]
   phone?: string
   website?: string
   hours?: Record<string, string>
+}
+
+export interface CafeMetrics {
+  functional?: {
+    score?: number
+    components?: {
+      wifi?: number
+      seating?: number
+      outlets?: number
+      capacity?: number
+      drinks?: number
+    }
+  }
+  atmospheric?: {
+    score?: number
+    components?: {
+      reputation?: number
+      noise?: number
+      lighting?: number
+    }
+  }
+  confidence?: {
+    reviewsAnalyzed?: number
+    smoothingConstant?: number
+    globalMean?: number
+    rawScore?: number
+    factorMentions?: Record<string, number>
+  }
 }
 
 export interface CafeSearchParams {

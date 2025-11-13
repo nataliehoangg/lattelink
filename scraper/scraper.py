@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 from typing import Dict, List, Optional, Set, Tuple
 
+import math
+
 import requests
 from pymongo import MongoClient
 from textblob import TextBlob
@@ -36,6 +38,8 @@ vader = SentimentIntensityAnalyzer()
 GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 YELP_API_KEY = os.getenv("YELP_API_KEY")
 DEFAULT_MAX_RESULTS = 30
+GLOBAL_HWI_MEAN = 6.8
+SMOOTHING_K = 8
 
 # Keywords to filter obvious restaurants that are unlikely to be laptop-friendly cafés
 RESTAURANT_KEYWORDS = {
@@ -105,25 +109,28 @@ class CafeScraper:
     # ------------------------------------------------------------------
 
     def analyze_review_sentiment(self, text: str) -> Dict:
-        """Return sentiment scores focused on workability signals."""
+        """Return sentiment scores focused on holistic workability signals."""
         text = text or ""
         text_lower = text.lower()
 
         wifi_keywords = ["wifi", "wi-fi", "internet", "connection", "network", "signal"]
         outlet_keywords = ["outlet", "plug", "charging", "power", "socket", "usb"]
-        seating_keywords = ["seat", "table", "chair", "space", "room", "crowded", "busy"]
-        noise_keywords = ["noise", "loud", "quiet", "silent", "peaceful", "chaotic", "music"]
+        seating_keywords = ["seat", "table", "chair", "desk", "booth", "stool"]
+        capacity_keywords = ["space", "room", "crowded", "busy", "packed", "line", "seats", "tables"]
+        drinks_keywords = ["coffee", "latte", "drink", "espresso", "tea", "matcha", "pour-over", "americano"]
+        lighting_keywords = ["light", "lighting", "sunlight", "window", "bright", "dim", "dark", "natural light"]
+        noise_keywords = ["noise", "loud", "quiet", "silent", "peaceful", "music", "blaring", "echo"]
 
         vader_score = vader.polarity_scores(text)["compound"]
         blob_score = TextBlob(text).sentiment.polarity
         overall = (vader_score + blob_score) / 2
 
-        def factor_score(keywords: List[str]) -> float:
+        def factor_score(keywords: List[str]) -> Optional[float]:
             if not any(kw in text_lower for kw in keywords):
-                return 0.0
+                return None
             sentences = [s for s in text.split(".") if any(kw in s.lower() for kw in keywords)]
             if not sentences:
-                return 0.0
+                return None
             factor_text = " ".join(sentences)
             v = vader.polarity_scores(factor_text)["compound"]
             b = TextBlob(factor_text).sentiment.polarity
@@ -132,86 +139,183 @@ class CafeScraper:
         wifi_score = factor_score(wifi_keywords)
         outlet_score = factor_score(outlet_keywords)
         seating_score = factor_score(seating_keywords)
+        capacity_score = factor_score(capacity_keywords)
+        drinks_score = factor_score(drinks_keywords)
+        lighting_score = factor_score(lighting_keywords)
         noise_score = factor_score(noise_keywords)
 
-        keywords_found = []
-        if wifi_score:
-            keywords_found.append("wifi")
-        if outlet_score:
-            keywords_found.append("outlets")
-        if seating_score:
-            keywords_found.append("seating")
-        if noise_score:
-            keywords_found.append("noise")
+        keywords_found: List[str] = []
+        for key, score in [
+            ("wifi", wifi_score),
+            ("outlets", outlet_score),
+            ("seating", seating_score),
+            ("capacity", capacity_score),
+            ("drinks", drinks_score),
+            ("lighting", lighting_score),
+            ("noise", noise_score),
+        ]:
+            if score is not None:
+                keywords_found.append(key)
 
         return {
             "overall": overall,
-            "wifi": wifi_score,
-            "outlets": outlet_score,
-            "seating": seating_score,
-            "noise": noise_score,
+            "wifi": wifi_score if wifi_score is not None else 0.0,
+            "outlets": outlet_score if outlet_score is not None else 0.0,
+            "seating": seating_score if seating_score is not None else 0.0,
+            "capacity": capacity_score if capacity_score is not None else 0.0,
+            "drinks": drinks_score if drinks_score is not None else 0.0,
+            "lighting": lighting_score if lighting_score is not None else 0.0,
+            "noise": noise_score if noise_score is not None else 0.0,
             "keywords": keywords_found,
         }
 
-    def score_amenities(self, reviews: List[Dict]) -> Dict:
-        """Aggregate sentiment into amenity scores."""
+    def score_amenities(self, reviews: List[Dict]) -> Tuple[Dict, Dict[str, int]]:
+        """Aggregate sentiment into amenity scores and return factor mention counts."""
+        default_summary = {
+            "wifi": {"quality": "unknown", "score": 5.0},
+            "outlets": {"available": False, "score": 5.0},
+            "seating": {"type": "unknown", "score": 5.0},
+            "capacity": {"level": "unknown", "score": 5.0},
+            "drinks": {"quality": "unknown", "score": 5.0},
+            "lighting": {"quality": "unknown", "score": 5.0},
+            "noise": {"level": "unknown", "score": 5.0},
+        }
+        default_counts = {
+            "wifi": 0,
+            "outlets": 0,
+            "seating": 0,
+            "capacity": 0,
+            "drinks": 0,
+            "lighting": 0,
+            "noise": 0,
+        }
+
         if not reviews:
-            return {
-                "wifi": {"quality": "unknown", "score": 5.0},
-                "outlets": {"available": False, "score": 5.0},
-                "seating": {"type": "unknown", "score": 5.0},
-                "noise": {"level": "unknown", "score": 5.0},
-            }
+            return default_summary, default_counts
+
+        def safe_value(value: Optional[float]) -> float:
+            if value is None or not isinstance(value, (int, float)) or math.isnan(value):
+                return 0.0
+            return float(value)
 
         wifi_scores: List[float] = []
         outlet_scores: List[float] = []
         seating_scores: List[float] = []
+        capacity_scores: List[float] = []
+        drinks_scores: List[float] = []
+        lighting_scores: List[float] = []
         noise_scores: List[float] = []
         outlet_positive_mentions = 0
+        factor_counts = dict(default_counts)
 
         for review in reviews:
             sentiment = review.get("sentiment", {})
-            if sentiment.get("wifi"):
-                wifi_scores.append(sentiment["wifi"])
-            if sentiment.get("outlets"):
-                outlet_scores.append(sentiment["outlets"])
-                if sentiment["outlets"] > 0:
+            keywords = set(sentiment.get("keywords", []))
+
+            if "wifi" in keywords:
+                wifi_scores.append(safe_value(sentiment.get("wifi")))
+                factor_counts["wifi"] += 1
+
+            if "outlets" in keywords:
+                score = safe_value(sentiment.get("outlets"))
+                outlet_scores.append(score)
+                factor_counts["outlets"] += 1
+                if score > 0:
                     outlet_positive_mentions += 1
-            if sentiment.get("seating"):
-                seating_scores.append(sentiment["seating"])
-            if sentiment.get("noise"):
-                noise_scores.append(sentiment["noise"])
+
+            if "seating" in keywords:
+                seating_scores.append(safe_value(sentiment.get("seating")))
+                factor_counts["seating"] += 1
+
+            if "capacity" in keywords:
+                capacity_scores.append(safe_value(sentiment.get("capacity")))
+                factor_counts["capacity"] += 1
+
+            if "drinks" in keywords:
+                drinks_scores.append(safe_value(sentiment.get("drinks")))
+                factor_counts["drinks"] += 1
+
+            if "lighting" in keywords:
+                lighting_scores.append(safe_value(sentiment.get("lighting")))
+                factor_counts["lighting"] += 1
+
+            if "noise" in keywords:
+                noise_scores.append(safe_value(sentiment.get("noise")))
+                factor_counts["noise"] += 1
 
         def to_score(value: float) -> float:
             return max(0.0, min(10.0, (value + 1) * 5))
 
-        def to_quality(avg: float, factor: str) -> str:
+        def wifi_quality(avg: float) -> str:
             if avg > 0.35:
-                return {"wifi": "excellent", "noise": "quiet", "seating": "comfortable"}[factor]
+                return "excellent"
             if avg > 0.05:
-                return {"wifi": "good", "noise": "moderate", "seating": "adequate"}[factor]
+                return "good"
             if avg > -0.25:
-                return {"wifi": "spotty", "noise": "moderate", "seating": "limited"}[factor]
-            return {"wifi": "poor", "noise": "loud", "seating": "limited"}[factor]
+                return "spotty"
+            return "poor"
+
+        def seating_quality(avg: float) -> str:
+            if avg > 0.35:
+                return "comfortable"
+            if avg > 0.05:
+                return "adequate"
+            return "limited"
+
+        def noise_quality(avg: float) -> str:
+            if avg > 0.35:
+                return "quiet"
+            if avg > -0.25:
+                return "moderate"
+            return "loud"
+
+        def capacity_level(avg: float) -> str:
+            if avg > 0.35:
+                return "ample"
+            if avg > 0.1:
+                return "roomy"
+            if avg > -0.25:
+                return "cozy"
+            return "tight"
+
+        def drinks_quality(avg: float) -> str:
+            if avg > 0.4:
+                return "excellent"
+            if avg > 0.1:
+                return "good"
+            if avg > -0.25:
+                return "average"
+            return "poor"
+
+        def lighting_quality(avg: float) -> str:
+            if avg > 0.35:
+                return "bright"
+            if avg > -0.2:
+                return "balanced"
+            return "dim"
 
         wifi_avg = sum(wifi_scores) / len(wifi_scores) if wifi_scores else 0.0
         outlet_avg = sum(outlet_scores) / len(outlet_scores) if outlet_scores else 0.0
         seating_avg = sum(seating_scores) / len(seating_scores) if seating_scores else 0.0
+        capacity_avg = sum(capacity_scores) / len(capacity_scores) if capacity_scores else 0.0
+        drinks_avg = sum(drinks_scores) / len(drinks_scores) if drinks_scores else 0.0
+        lighting_avg = sum(lighting_scores) / len(lighting_scores) if lighting_scores else 0.0
         noise_avg = sum(noise_scores) / len(noise_scores) if noise_scores else 0.0
 
         amenities_summary = {
-            "wifi": {"quality": to_quality(wifi_avg, "wifi"), "score": to_score(wifi_avg)},
+            "wifi": {"quality": wifi_quality(wifi_avg), "score": to_score(wifi_avg)},
             "outlets": {
-                # Treat outlets as available only if multiple positive mentions show up in reviews.
-                # This prioritises cafés that reviewers consistently call out as laptop-friendly.
                 "available": outlet_positive_mentions >= 2,
                 "score": to_score(outlet_avg),
             },
-            "seating": {"type": to_quality(seating_avg, "seating"), "score": to_score(seating_avg)},
-            "noise": {"level": to_quality(noise_avg, "noise"), "score": to_score(noise_avg)},
+            "seating": {"type": seating_quality(seating_avg), "score": to_score(seating_avg)},
+            "capacity": {"level": capacity_level(capacity_avg), "score": to_score(capacity_avg)},
+            "drinks": {"quality": drinks_quality(drinks_avg), "score": to_score(drinks_avg)},
+            "lighting": {"quality": lighting_quality(lighting_avg), "score": to_score(lighting_avg)},
+            "noise": {"level": noise_quality(noise_avg), "score": to_score(noise_avg)},
         }
 
-        return amenities_summary
+        return amenities_summary, factor_counts
 
     # ------------------------------------------------------------------
     # External API consumers
@@ -559,25 +663,90 @@ class CafeScraper:
             sentiment = self.analyze_review_sentiment(review.get("text", ""))
             analyzed_reviews.append({**review, "sentiment": sentiment})
 
-        amenities = self.score_amenities(analyzed_reviews)
+        amenities, factor_counts = self.score_amenities(analyzed_reviews)
 
-        outlet_component = amenities["outlets"]["score"] if amenities["outlets"]["available"] else 0
-        seating_component = amenities["seating"]["score"]
-        wifi_component = amenities["wifi"]["score"]
-        noise_component = amenities["noise"]["score"]
+        def clamp_score(value: Optional[float], default: float = 5.0) -> float:
+            if value is None or not isinstance(value, (int, float)) or math.isnan(value):
+                return default
+            return max(0.0, min(10.0, float(value)))
 
-        workability_score = (
-            outlet_component * 0.45
-            + seating_component * 0.3
-            + wifi_component * 0.2
-            + noise_component * 0.05
+        def sigmoid_wifi(score: float) -> float:
+            clamped = clamp_score(score)
+            return 10.0 / (1.0 + math.exp(-0.5 * (clamped - 5.0)))
+
+        def gaussian_noise(score: float) -> float:
+            clamped = clamp_score(score)
+            return 10.0 * math.exp(-((clamped - 5.0) ** 2) / 10.0)
+
+        wifi_component = sigmoid_wifi(amenities["wifi"]["score"])
+        seating_component = clamp_score(amenities["seating"]["score"])
+        outlet_component = clamp_score(amenities["outlets"]["score"])
+        capacity_component = clamp_score(amenities["capacity"]["score"])
+        drinks_component = clamp_score(amenities["drinks"]["score"])
+        lighting_component = clamp_score(amenities["lighting"]["score"])
+        noise_component = gaussian_noise(amenities["noise"]["score"])
+
+        functional_score = (
+            wifi_component * 0.35
+            + seating_component * 0.25
+            + outlet_component * 0.20
+            + capacity_component * 0.10
+            + drinks_component * 0.10
         )
 
-        # Heavier penalty if reviewers did not highlight outlet availability.
-        if not amenities["outlets"]["available"]:
-            workability_score *= 0.6
+        overall_rating = self.compute_overall_rating(cafe_data.get("rating_sources", {}))
+        if overall_rating is None:
+            overall_rating = cafe_data.get("rating")
+        if overall_rating is None:
+            overall_rating = 3.5
+        reputation_component = clamp_score(overall_rating * 2.0, default=6.8)
 
-        workability_score = round(workability_score, 2)
+        atmospheric_score = (
+            reputation_component * 0.5
+            + noise_component * 0.25
+            + lighting_component * 0.25
+        )
+
+        raw_hwi = functional_score * 0.7 + atmospheric_score * 0.3
+
+        review_count = len(analyzed_reviews)
+        denominator = review_count + SMOOTHING_K
+        adjusted_hwi = (
+            (review_count / denominator) * raw_hwi
+            + (SMOOTHING_K / denominator) * GLOBAL_HWI_MEAN
+            if denominator > 0
+            else raw_hwi
+        )
+
+        workability_score = round(max(0.0, min(10.0, adjusted_hwi)), 2)
+
+        metrics = {
+            "functional": {
+                "score": round(functional_score, 2),
+                "components": {
+                    "wifi": round(wifi_component, 2),
+                    "seating": round(seating_component, 2),
+                    "outlets": round(outlet_component, 2),
+                    "capacity": round(capacity_component, 2),
+                    "drinks": round(drinks_component, 2),
+                },
+            },
+            "atmospheric": {
+                "score": round(atmospheric_score, 2),
+                "components": {
+                    "reputation": round(reputation_component, 2),
+                    "noise": round(noise_component, 2),
+                    "lighting": round(lighting_component, 2),
+                },
+            },
+            "confidence": {
+                "reviewsAnalyzed": review_count,
+                "smoothingConstant": SMOOTHING_K,
+                "globalMean": GLOBAL_HWI_MEAN,
+                "rawScore": round(raw_hwi, 2),
+                "factorMentions": factor_counts,
+            },
+        }
 
         tags: Set[str] = {"Laptop-Friendly", "Study-Friendly"}
         wifi_quality = amenities["wifi"]["quality"]
@@ -587,8 +756,14 @@ class CafeScraper:
             tags.add("Many Outlets")
         if amenities["noise"]["level"] == "quiet":
             tags.add("Quiet")
-        if amenities["seating"]["type"] == "comfortable":
+        if 6.0 <= noise_component <= 8.5:
+            tags.add("Balanced Noise")
+        if amenities["seating"]["type"] == "comfortable" or capacity_component >= 7.5:
             tags.add("Spacious")
+        if drinks_component >= 7.5:
+            tags.add("Great Coffee")
+        if lighting_component >= 7.0:
+            tags.add("Well-Lit")
 
         coordinates = {
             "type": "Point",
@@ -605,6 +780,7 @@ class CafeScraper:
             "neighborhood": neighborhood_value,
             "coordinates": coordinates,
             "amenities": amenities,
+            "metrics": metrics,
             "tags": list(tags),
             "googleMapsId": cafe_data.get("google_maps_id"),
             "yelpId": cafe_data.get("yelp_id"),
@@ -614,7 +790,7 @@ class CafeScraper:
             "priceLevel": cafe_data.get("price_level"),
             "sources": list(cafe_data.get("sources", [])),
             "types": list(cafe_data.get("types", set())),
-            "rating": self.compute_overall_rating(cafe_data.get("rating_sources", {})),
+            "rating": overall_rating,
             "ratingSources": cafe_data.get("rating_sources", {}),
             "reviewCounts": cafe_data.get("review_counts", {}),
             "lastUpdated": _now(),

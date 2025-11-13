@@ -8,9 +8,10 @@ import Link from 'next/link'
 interface CafeCardProps {
   cafe: Cafe
   index?: number
+  currentQuery?: string
 }
 
-export default function CafeCard({ cafe, index = 0 }: CafeCardProps) {
+export default function CafeCard({ cafe, index = 0, currentQuery }: CafeCardProps) {
   const getWifiIcon = () => {
     switch (cafe.amenities.wifi.quality) {
       case 'excellent':
@@ -37,6 +38,14 @@ export default function CafeCard({ cafe, index = 0 }: CafeCardProps) {
     }
   }
 
+  const trimmedQuery = currentQuery?.trim()
+  const cafeLink = trimmedQuery
+    ? {
+        pathname: `/cafe/${cafe._id}`,
+        query: { q: trimmedQuery },
+      }
+    : `/cafe/${cafe._id}`
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 30 }}
@@ -44,7 +53,7 @@ export default function CafeCard({ cafe, index = 0 }: CafeCardProps) {
       transition={{ duration: 0.5, delay: index * 0.1, ease: 'easeOut' }}
       className="group relative"
     >
-      <Link href={`/cafe/${cafe._id}`}>
+      <Link href={cafeLink}>
         <div className="relative bg-cream border border-mist-gray overflow-hidden hover-lift h-full">
           {/* Optional: Image background placeholder - can be replaced with actual images */}
           <div className="absolute inset-0 bg-gradient-to-br from-pale-latte/30 to-mist-gray/20 opacity-0 group-hover:opacity-100 transition-opacity duration-400" />
@@ -64,7 +73,7 @@ export default function CafeCard({ cafe, index = 0 }: CafeCardProps) {
               <div className="flex items-center gap-1.5 bg-pale-latte/50 px-3 py-1.5 rounded">
                 <Star className="w-4 h-4 fill-mocha text-mocha" />
                 <span className="font-semibold text-espresso text-sm">
-                  {cafe.workabilityScore.toFixed(1)}
+                  {`${cafe.workabilityScore.toFixed(1)}/10`}
                 </span>
               </div>
             </div>

@@ -5,9 +5,10 @@ import CafeCard from './CafeCard'
 
 interface CafeListProps {
   cafes: Cafe[]
+  currentQuery?: string
 }
 
-export default function CafeList({ cafes }: CafeListProps) {
+export default function CafeList({ cafes, currentQuery }: CafeListProps) {
   if (cafes.length === 0) {
     return (
       <div className="text-center py-32">
@@ -33,7 +34,7 @@ export default function CafeList({ cafes }: CafeListProps) {
       {/* Grid with generous spacing - editorial layout */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {cafes.map((cafe, index) => (
-          <CafeCard key={cafe._id} cafe={cafe} index={index} />
+          <CafeCard key={cafe._id} cafe={cafe} index={index} currentQuery={currentQuery} />
         ))}
       </div>
     </div>

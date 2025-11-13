@@ -57,6 +57,24 @@ const reviewSchema = new mongoose.Schema({
       max: 1,
       default: 0,
     },
+    capacity: {
+      type: Number,
+      min: -1,
+      max: 1,
+      default: 0,
+    },
+    drinks: {
+      type: Number,
+      min: -1,
+      max: 1,
+      default: 0,
+    },
+    lighting: {
+      type: Number,
+      min: -1,
+      max: 1,
+      default: 0,
+    },
   },
   keywords: [{
     type: String,

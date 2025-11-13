@@ -1,15 +1,20 @@
 'use client'
 
-import { useState, FormEvent } from 'react'
+import { useState, useEffect, FormEvent } from 'react'
 import { motion } from 'framer-motion'
 
 interface SearchBarProps {
   onSearch: (query: string) => void
+  initialValue?: string
 }
 
-export default function SearchBar({ onSearch }: SearchBarProps) {
-  const [query, setQuery] = useState('')
+export default function SearchBar({ onSearch, initialValue = '' }: SearchBarProps) {
+  const [query, setQuery] = useState(initialValue)
   const [isFocused, setIsFocused] = useState(false)
+
+  useEffect(() => {
+    setQuery((prev) => (prev === initialValue ? prev : initialValue))
+  }, [initialValue])
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault()

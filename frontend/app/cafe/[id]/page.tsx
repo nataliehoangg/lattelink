@@ -1,6 +1,6 @@
 'use client'
 
-import { useParams } from 'next/navigation'
+import { useParams, useRouter, useSearchParams } from 'next/navigation'
 import useSWR from 'swr'
 import { motion } from 'framer-motion'
 import { cafesApi, Cafe } from '@/lib/api'
@@ -9,6 +9,10 @@ import Link from 'next/link'
 
 export default function CafeDetailPage() {
   const params = useParams()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const previousQuery = searchParams?.get('q') ?? ''
+  const fallbackHref = previousQuery ? `/?q=${encodeURIComponent(previousQuery)}` : '/'
   const id = params.id as string
 
   const { data: cafe, error, isLoading } = useSWR(
@@ -29,7 +33,7 @@ export default function CafeDetailPage() {
       <div className="min-h-screen bg-cream flex items-center justify-center">
         <div className="text-center">
           <h1 className="editorial-h2 text-deep-coffee mb-4">Café not found</h1>
-          <Link href="/" className="editorial-body text-mocha hover:text-espresso transition-colors">
+          <Link href={fallbackHref} className="editorial-body text-mocha hover:text-espresso transition-colors">
             ← Back to search
           </Link>
         </div>
@@ -37,16 +41,26 @@ export default function CafeDetailPage() {
     )
   }
 
+  const handleBack = () => {
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      router.back()
+      return
+    }
+
+    router.push(fallbackHref)
+  }
+
   return (
     <div className="min-h-screen bg-cream pt-32 pb-16">
       <main className="editorial-container">
         <div className="mb-10">
-          <Link
-            href="/"
+          <button
+            type="button"
+            onClick={handleBack}
             className="editorial-caption text-mocha hover:text-espresso transition-colors inline-flex items-center gap-2"
           >
             ← Back
-          </Link>
+          </button>
         </div>
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -67,9 +81,8 @@ export default function CafeDetailPage() {
             <div className="flex items-center gap-2 bg-pale-latte/50 px-6 py-3">
               <Star className="w-6 h-6 fill-mocha text-mocha" />
               <span className="editorial-h2 text-espresso">
-                {cafe.workabilityScore.toFixed(1)}
+                {`${cafe.workabilityScore.toFixed(1)}/10`}
               </span>
-              <span className="editorial-caption text-deep-coffee/60">/ 10</span>
             </div>
           </div>
 

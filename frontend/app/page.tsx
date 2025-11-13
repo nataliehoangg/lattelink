@@ -1,13 +1,17 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import SearchBar from "@/components/SearchBar";
 import CafeList from "@/components/CafeList";
 import MapView from "@/components/MapView";
 import { useCafes } from "@/hooks/useCafes";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 export default function Home(): JSX.Element {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<"list" | "map">("list");
   const { cafes, isLoading, error } = useCafes(searchQuery);
@@ -19,6 +23,11 @@ export default function Home(): JSX.Element {
   const resultsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const qParam = searchParams?.get("q") ?? "";
+    setSearchQuery((prev) => (prev === qParam ? prev : qParam));
+  }, [searchParams]);
+
+  useEffect(() => {
     if (hasSearched && resultsRef.current) {
       resultsRef.current.scrollIntoView({
         behavior: "smooth",
@@ -26,6 +35,27 @@ export default function Home(): JSX.Element {
       });
     }
   }, [hasSearched, resultsCount]);
+
+  const handleSearch = useCallback(
+    (query: string) => {
+      const trimmed = query.trim();
+      setSearchQuery(trimmed);
+      setViewMode("list");
+
+      const currentParams = new URLSearchParams(searchParams?.toString() ?? "");
+      if (trimmed) {
+        currentParams.set("q", trimmed);
+      } else {
+        currentParams.delete("q");
+      }
+
+      const next = currentParams.toString();
+      const target = next ? `${pathname}?${next}` : pathname;
+
+      router.push(target, { scroll: false });
+    },
+    [pathname, router, searchParams]
+  );
 
   return (
     <main className="min-h-screen bg-cream">
@@ -50,7 +80,7 @@ export default function Home(): JSX.Element {
                     LATTELINK
                   </h1>
                   <div className="max-w-2xl mx-auto">
-                    <SearchBar onSearch={setSearchQuery} />
+                    <SearchBar onSearch={handleSearch} initialValue={searchQuery} />
                   </div>
                 </div>
               </div>
@@ -143,11 +173,11 @@ export default function Home(): JSX.Element {
 
               {!isLoading && hasResults && (
                 <>
-                  {viewMode === "list" ? (
-                    <CafeList cafes={cafes ?? []} />
-                  ) : (
-                    <MapView cafes={cafes ?? []} />
-                  )}
+                      {viewMode === "list" ? (
+                        <CafeList cafes={cafes ?? []} currentQuery={searchQuery} />
+                      ) : (
+                        <MapView cafes={cafes ?? []} currentQuery={searchQuery} />
+                      )}
                 </>
               )}
             </div>

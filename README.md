@@ -107,14 +107,19 @@ By default this launches:
 
 ## 🧠 How Workability Scores Are Calculated
 
-1. **Review analysis** – Every Google review is processed with VADER + TextBlob. Keywords for Wi-Fi, outlets, seating, and noise are extracted to produce sentiment scores in the `[-1, 1]` range.
-2. **Amenity scoring** – Sentiment averages are scaled to `0–10`. Outlet availability is only marked “available” if at least two reviews positively mention outlets.
-3. **Weighted rating** – Final score (0–10) uses the following weights:
-   - Outlets: **45 %** (with a heavy penalty if outlets aren’t confirmed)
-   - Seating comfort: **30 %**
-   - Wi-Fi reliability: **20 %**
-   - Noise level: **5 %** (still displayed, but almost no impact on the ranking)
-4. **Sorting** – API responses default to descending `workabilityScore`.
+1. **Review analysis** – Every Google (and optional Yelp) review runs through VADER + TextBlob. Keyword windows surface sentiments for Wi-Fi, outlets, seating, overall capacity, drinks, lighting, and noise.
+2. **Amenity scoring** – Sentiment averages are scaled to `0–10` per factor. Outlets become “available” only when at least two reviewers praise charging options.
+3. **Holistic Workability Index (HWI)** – The raw score blends functional + atmospheric signals:
+   - Functional `F = 0.35 Wf + 0.25 S + 0.20 O + 0.10 C + 0.10 D`
+     - `Wf` is Wi-Fi sentiment passed through a sigmoid so poor Wi-Fi lowers the score smoothly instead of tanking it.
+     - `S`, `O`, `C`, `D` capture seating comfort, outlet sentiment, capacity/crowding, and drink quality.
+   - Atmospheric `A = 0.5 R + 0.25 N + 0.25 L`
+     - `R` is the combined star rating (Google/Yelp) mapped to `0–10`.
+     - `N` is a Gaussian preference curve centred on “moderate” noise (both ultra-quiet and very loud trend downward).
+     - `L` measures lighting + ambience sentiment.
+   - Raw HWI `= 0.7 F + 0.3 A`.
+4. **Confidence smoothing** – A Bayesian adjustment pulls sparse cafés toward a global mean (`μ = 6.8`, `k = 8`). More reviews push the score closer to the café’s own data.
+5. **Sorting** – API responses default to descending `workabilityScore`.
 
 The backend and scraper both run the same calculation so the value stays consistent regardless of the data ingest path.
 
@@ -159,7 +164,7 @@ Tips:
 3. **Normalisation & Filtering** – We convert results into a common schema, skipping anything that looks primarily like a restaurant/bar, and capture `place_id` for dedupe.
 4. **Sentiment Analysis** – Review text is analysed with VADER + TextBlob to produce per-factor sentiment (Wi-Fi, outlets, seating, noise).
 5. **Amenity Scoring** – Sentiment averages are converted to 0–10 scores; outlets are only marked “available” when reviewers repeatedly praise them.
-6. **Weighted Workability** – The scraper calculates the weighted score (outlets > seating > Wi-Fi > noise) and stores amenities/tags for display.
+6. **Holistic Workability calculation** – The scraper produces functional + atmospheric components, stores them under `metrics`, and applies Bayesian smoothing before the final HWI is written.
 7. **Upsert & Cleanup** – Before inserting new cafés, the scraper removes existing records for that city (and associated reviews) so results stay fresh. Upserts key on `place_id`, `yelp_id`, or name+address to avoid duplicates.
 
 > You can run multiple cities sequentially (recommended). Parallel scrapes from separate terminals work, but Google rate limiting becomes more likely.
